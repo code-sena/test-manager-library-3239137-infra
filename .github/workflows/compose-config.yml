@@ -1,0 +1,111 @@
+name: Compose configuration
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      DB_DATABASE: library
+      DB_USERNAME: library
+      DB_PASSWORD: ci-only-password
+      JWT_SECRET: ci-only-jwt-secret-at-least-32-characters-long
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: ci-only-admin-password
+      CORS_ORIGIN: http://localhost:5173
+      VITE_API_URL: http://localhost:8000/api/v1
+      DEMO_CLOCK: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config --quiet
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: JohanOtavo/test-manager-library-3239137-api
+          ref: feature/ci-postgres-tests
+          path: api
+      - uses: actions/checkout@v4
+        with:
+          repository: JohanOtavo/test-manager-library-3239137-app
+          ref: feature/frontend-ci
+          path: app
+      - uses: actions/checkout@v4
+        with:
+          repository: JohanOtavo/test-manager-library-3239137-tool
+          ref: feature/tool-ci
+          path: tool
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Link sibling build contexts
+        run: |
+          ln -s "$GITHUB_WORKSPACE/api" "$GITHUB_WORKSPACE/../test-manager-library-3239137-api"
+          ln -s "$GITHUB_WORKSPACE/app" "$GITHUB_WORKSPACE/../test-manager-library-3239137-app"
+      - name: Configure clean stack
+        run: |
+          cat > .env <<'EOF'
+          DB_DATABASE=library
+          DB_USERNAME=library
+          DB_PASSWORD=ci-only-database-password
+          JWT_SECRET=ci-only-jwt-secret-with-enough-entropy-for-tests
+          ADMIN_USERNAME=admin
+          ADMIN_PASSWORD=ci-only-admin-password
+          CORS_ORIGIN=http://127.0.0.1:5173
+          VITE_API_URL=http://127.0.0.1:8000/api/v1
+          DEMO_CLOCK=true
+          EOF
+      - name: Start PostgreSQL, API and frontend from clean volumes
+        run: docker compose up -d --build
+      - name: Wait for API and frontend
+        run: |
+          curl --retry 40 --retry-connrefused --retry-all-errors --retry-delay 2 --fail http://127.0.0.1:8000/api/v1/health
+          curl --retry 40 --retry-connrefused --retry-all-errors --retry-delay 2 --fail http://127.0.0.1:5173/ >/dev/null
+      - name: Run API integration and concurrency suites
+        run: docker compose exec -T api composer test
+      - name: Reset to a clean migrated database and provision admin
+        run: |
+          docker compose exec -T api php artisan migrate:fresh --force
+          docker compose exec -T api php artisan library:ensure-admin
+      - name: Seed the real API twice and verify idempotence
+        env:
+          API_URL: http://127.0.0.1:8000/api/v1
+          ADMIN_USERNAME: admin
+          ADMIN_PASSWORD: ci-only-admin-password
+          MANAGER_LIBRARY_SEED_STATE_PATH: ${{ runner.temp }}/manager-library-seed.json
+        run: |
+          node tool/seed.js
+          node tool/seed.js
+      - name: Install browser test runner
+        run: npm install --no-save --package-lock=false @playwright/test
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Verify authenticated desktop and mobile flows
+        env:
+          E2E_ADMIN_USERNAME: admin
+          E2E_ADMIN_PASSWORD: ci-only-admin-password
+        run: npx playwright test
+      - name: Upload browser screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manager-library-browser-review
+          path: test-results/*.png
+          if-no-files-found: ignore
+      - name: Print service logs on failure
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose logs --no-color --tail=100
+      - name: Stop stack and remove clean test volumes
+        if: always()
+        run: docker compose down -v

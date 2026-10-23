@@ -1,0 +1,76 @@
+# Manager Library · un solo comando levanta todo (RNF-5, T-20).
+#
+# El motor arranca VACÍO: aquí no hay ni un CREATE TABLE. El esquema lo crean
+# las migraciones de la API al arrancar (artículo V, ADR-001).
+name: manager-library
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${DB_DATABASE}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      TZ: UTC
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    networks:
+      - library
+    healthcheck:
+      # La API espera a que el motor acepte conexiones: si no, la primera
+      # migración fallaría por carrera de arranque.
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME} -d ${DB_DATABASE}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: ../test-manager-library-3239137-api
+    environment:
+      APP_ENV: local
+      APP_DEBUG: "false"
+      DB_CONNECTION: pgsql
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_DATABASE: ${DB_DATABASE}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_SCHEMA: library
+      JWT_SECRET: ${JWT_SECRET}
+      ADMIN_USERNAME: ${ADMIN_USERNAME}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      CORS_ORIGIN: ${CORS_ORIGIN}
+      LOG_CHANNEL: stderr
+      # Solo para el sembrador de tool, y solo porque APP_ENV es local.
+      DEMO_CLOCK: ${DEMO_CLOCK:-false}
+    ports:
+      - "8000:8000"
+    volumes:
+      # Las portadas sobreviven a un recreate del contenedor.
+      - covers:/app/storage/app/covers
+    networks:
+      - library
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    build:
+      context: ../test-manager-library-3239137-app
+    environment:
+      VITE_API_URL: ${VITE_API_URL}
+    ports:
+      - "5173:5173"
+    networks:
+      - library
+    depends_on:
+      - api
+
+volumes:
+  db-data:
+  covers:
+
+networks:
+  library:
+    driver: bridge

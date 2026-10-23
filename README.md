@@ -1,50 +1,88 @@
 # test-manager-library-3239137-infra
 
-> **Prueba técnica · Ficha ADSO 3239137**
-> Horario: **viernes 23 de octubre de 2026, de 7:00 a. m. a 11:00 a. m.** (hora Colombia). Entrega a las **11:00 a. m.**
+Contenedores, red, volúmenes y el motor de base de datos **vacío** de
+*Manager Library*.
 
-Este repositorio es la **infraestructura** de *Manager Library*: contenedores, red, volúmenes y el motor de base de datos vacío. **Empieza vacío a propósito**: se construye en el fork de cada aprendiz.
+## Qué hay aquí y qué no
 
-## Instrucciones
-
-Cada aprendiz debe **crear el fork** de los seis repositorios del proyecto y **resolver el proyecto
-con el spec planteado**.
-
-1. Hacer fork, a su cuenta de GitHub, de cada repositorio de la tabla del final.
-2. Leer el spec en [`test-manager-library-3239137-docs`](https://github.com/code-sena/test-manager-library-3239137-docs).
-   Se entrega en dos versiones: `spec-python/` y `spec-.net/`.
-3. Desarrollar en los forks.
-
-## El reto se desarrolla con React y PHP (Laravel)
-
-El spec está escrito para Python y para .NET, pero el reto **no** se hace en esos lenguajes:
-
-| Capa | Tecnología del reto |
+| Sí | No |
 |---|---|
-| Frontend | React |
-| Backend | PHP con Laravel |
+| `docker-compose.yml`: motor, API y frontend | Ni un `CREATE TABLE` |
+| Red y volúmenes con nombre | Semillas en SQL |
+| Las variables de entorno de todos los servicios | Credenciales reales |
 
-Lo que el spec define sobre el negocio —historias, criterios de aceptación, reglas, contrato de la
-API, modelo de datos— se respeta. Lo que define sobre la tecnología se traduce a React y Laravel.
+El esquema **no se define aquí**. El motor arranca sin tablas y las crean las
+migraciones de la API al levantar (artículo V, ADR-001). Se puede comprobar:
 
-## La prueba no consiste en escribir el código
+```bash
+grep -ri "create table" .    # no devuelve nada
+```
 
-El propósito principal es ver la **capacidad de desempeño con SDD** (*Spec-Driven Development*,
-desarrollo guiado por especificación): cómo se lee, se interpreta y se aplica una especificación
-para llevarla a un stack distinto. El código es el medio, no el fin.
+## Los seis repositorios, lado a lado
 
-## Entrega
+El compose construye la API y el frontend desde sus repositorios hermanos, así
+que los forks van clonados en la misma carpeta:
 
-Cuenta lo que quede **subido a los forks antes de las 11:00 a. m.** Lo que llegue después no se revisa.
-No hay prórroga: suban avances parciales con commits pequeños durante la prueba.
+```
+repositorios/
+├── test-manager-library-3239137-api
+├── test-manager-library-3239137-app
+├── test-manager-library-3239137-docs
+├── test-manager-library-3239137-infra   <- se levanta desde aquí
+├── test-manager-library-3239137-page
+└── test-manager-library-3239137-tool
+```
 
-## Los seis repositorios
+## Un solo comando
 
-| Repositorio | Qué va ahí |
-|---|---|
-| [`test-manager-library-3239137-docs`](https://github.com/code-sena/test-manager-library-3239137-docs) | El spec: `spec-python/` y `spec-.net/` |
-| [`test-manager-library-3239137-api`](https://github.com/code-sena/test-manager-library-3239137-api) | Backend en PHP (Laravel) |
-| [`test-manager-library-3239137-app`](https://github.com/code-sena/test-manager-library-3239137-app) | Frontend en React |
-| [`test-manager-library-3239137-page`](https://github.com/code-sena/test-manager-library-3239137-page) | Sitio público estático de presentación |
-| [`test-manager-library-3239137-infra`](https://github.com/code-sena/test-manager-library-3239137-infra) | Contenedores, red, volúmenes y motor de base de datos vacío |
-| [`test-manager-library-3239137-tool`](https://github.com/code-sena/test-manager-library-3239137-tool) | Utilidades: sembrador de datos de demostración |
+```bash
+cp .env.example .env          # rellenar DB_PASSWORD, JWT_SECRET y ADMIN_PASSWORD
+docker compose up --build
+```
+
+Al terminar:
+
+| Servicio | Dónde | Qué es |
+|---|---|---|
+| API | http://localhost:8000/api/v1/health | `{"status":"ok"}` |
+| Frontend | http://localhost:5173 | Pantallas de operación |
+| Motor | `localhost:5432` | PostgreSQL 16, esquema `library` |
+
+El arranque de la API, en este orden: espera a que el motor acepte conexiones,
+corre las migraciones y crea el administrador inicial desde el entorno.
+
+## Comprobar que la base llegó vacía
+
+```bash
+docker compose up -d db
+docker compose exec db psql -U library -d library -c "\dt library.*"
+# "Did not find any relation named library.*" : correcto, el motor está vacío
+docker compose up -d api
+docker compose exec db psql -U library -d library -c "\dt library.*"
+# ahora sí: las seis tablas, creadas por las migraciones
+```
+
+## Las consultas de data-model §10
+
+Para comprobar que el documento de datos no miente:
+
+```bash
+docker compose exec db psql -U library -d library -c "select table_name, column_name, data_type, is_nullable, column_default from information_schema.columns where table_schema = 'library' order by table_name, ordinal_position"
+docker compose exec db psql -U library -d library -c "select conrelid::regclass, conname, contype, pg_get_constraintdef(oid) from pg_constraint where connamespace = 'library'::regnamespace order by 1, 3, 2"
+docker compose exec db psql -U library -d library -c "select tablename, indexname, indexdef from pg_indexes where schemaname = 'library' order by 1, 2"
+```
+
+Ninguna columna debe traer `column_default`.
+
+## Pruebas del backend dentro del contenedor
+
+```bash
+docker compose exec api vendor/bin/phpunit
+```
+
+## Apagar
+
+```bash
+docker compose down        # conserva los datos
+docker compose down -v     # borra el volumen: la base vuelve a arrancar vacía
+```
